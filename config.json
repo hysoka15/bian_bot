@@ -1,4 +1,7 @@
 {
-    "bian_key":"XX",
-    "bian_secret":"XX"
+    "bian_key":"xx",
+    "bian_secret":"xx",
+    "first_order_rate":0.2,
+    "per_step":0.01,
+    "single_order":0.1
 }
