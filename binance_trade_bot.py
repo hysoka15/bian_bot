@@ -21,6 +21,12 @@ async def main():
     
     client = Client(bian_key, bian_secret, {"timeout": 30})
 
+    current_orders = get_open_orders(client)
+    #当前有开着单，直接监听，不执行挂单
+    if(len(current_orders) > 0):
+        check_order(client)
+        return
+
     # 获取账户的U本位合约信息
     futures_account_info = client.futures_account()
 
@@ -67,7 +73,7 @@ async def main():
 
     print(order)
     avg_price = btc_price
-    sell_quantity = round((single_order_usdt / avg_price),3)
+    sell_quantity = round((single_order_usdt * leverage / avg_price),3)
     sell_quantity = max(0.002,sell_quantity)
 
     await asyncio.sleep(3)
@@ -82,7 +88,7 @@ async def main():
         #挂卖出单2，价格*102%
         sell_price = avg_price * (1 + per_step * 2)
         reduce_quantity = do_sell(client,sell_quantity,sell_price)
-        remain_quantity = btc_quantity - reduce_quantity
+        remain_quantity -= reduce_quantity
 
     if(remain_quantity > 0):
         await asyncio.sleep(3)
@@ -165,14 +171,14 @@ def check_order(client):
             if status == 'EXPIRED':
                 print(f"Order {order_id} is expired.")
                 open_orders.remove(order_id)
-            time.sleep(3)
-        time.sleep(3)
+            time.sleep(8)
+        time.sleep(8)
 
 
 def process_order(client,order):
     side = order['side']
-    price = order['avgPrice']
-    quantity = order['executedQty']
+    price = float(order['avgPrice'])
+    quantity = float(order['executedQty'])
     if(side == 'BUY'):
         sell_price = price * (1 + per_step)
         do_sell(client,quantity,sell_price)
