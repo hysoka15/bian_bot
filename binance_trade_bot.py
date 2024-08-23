@@ -6,11 +6,21 @@ import json
 single_order_usdt = None
 open_orders = []
 per_step = None
+client = None
+bian_key = None
+bian_secret = None
+
+
+def init_clinet():
+    global client
+    client = Client(bian_key, bian_secret, {"timeout": 30})
 
 async def main():
     with open('config.json', 'r') as f:
         config = json.load(f)
 
+    global bian_key
+    global bian_secret
     bian_key = config['bian_key']
     bian_secret = config['bian_secret']
     first_order_rate = config['first_order_rate']
@@ -19,12 +29,14 @@ async def main():
 
     single_order = config['single_order']
     
-    client = Client(bian_key, bian_secret, {"timeout": 30})
+    init_clinet()
 
-    current_orders = get_open_orders(client)
     #当前有开着单，直接监听，不执行挂单
-    if(len(current_orders) > 0):
-        check_order(client)
+    if(check_position('BTCUSDT')):
+        cur_orders = get_open_orders()
+        global open_orders
+        open_orders = [order['orderId'] for order in cur_orders]  # 提取所有订单的 'orderId'
+        check_order()
         return
 
     # 获取账户的U本位合约信息
@@ -79,7 +91,7 @@ async def main():
     await asyncio.sleep(3)
     #第一单买入完成，挂卖出单1，价格*101%
     sell_price = avg_price * (1 + per_step)
-    reduce_quantity = do_sell(client,sell_quantity,sell_price)
+    reduce_quantity = do_sell(sell_quantity,sell_price)
 
     remain_quantity = btc_quantity - reduce_quantity
 
@@ -87,14 +99,14 @@ async def main():
         await asyncio.sleep(3)
         #挂卖出单2，价格*102%
         sell_price = avg_price * (1 + per_step * 2)
-        reduce_quantity = do_sell(client,sell_quantity,sell_price)
+        reduce_quantity = do_sell(sell_quantity,sell_price)
         remain_quantity -= reduce_quantity
 
     if(remain_quantity > 0):
         await asyncio.sleep(3)
         #挂卖出单3，价格*103%
         sell_price = avg_price * (1 + per_step * 3)
-        do_sell(client,sell_quantity,sell_price)
+        do_sell(sell_quantity,sell_price)
 
 
     remain_usdt = available_usdt * leverage - (btc_quantity * avg_price)
@@ -104,7 +116,7 @@ async def main():
     buy_price = avg_price * (1 - per_step)
     if(remain_usdt >= buy_price * buy_quantity):
         await asyncio.sleep(3)
-        do_buy(client,buy_quantity,buy_price)
+        do_buy(buy_quantity,buy_price)
 
     
     remain_usdt -= buy_quantity * buy_price
@@ -112,13 +124,13 @@ async def main():
         await asyncio.sleep(3)
         #挂买入2，价格*98%
         buy_price = avg_price * (1 - per_step * 2)
-        do_buy(client,buy_quantity,buy_price)
+        do_buy(buy_quantity,buy_price)
 
-    check_order(client)
+    check_order()
 
 
 # 获取当前持仓信息
-def get_current_position(client,symbol):
+def get_current_position(symbol):
     positions = client.futures_account()['positions']
     for position in positions:
         if position['symbol'] == symbol:
@@ -126,7 +138,7 @@ def get_current_position(client,symbol):
     return 0.0
 
 
-# def fetch_tick_size(client):
+# def fetch_tick_size():
 #     global TICK_SIZE
 #     # 获取交易对的信息
 #     exchange_info = client.futures_exchange_info()
@@ -140,9 +152,9 @@ def get_current_position(client,symbol):
 #     else:
 #         print("BTCUSDT information not found.")
 
-def safe_sell_quantity(client,quantity):
+def safe_sell_quantity(quantity):
     # quantity = max(0.002,quantity)
-    current_position = get_current_position(client,'BTCUSDT')
+    current_position = get_current_position('BTCUSDT')
     if(current_position < 0.002):
         return current_position
     
@@ -155,42 +167,46 @@ def safe_sell_quantity(client,quantity):
     return quantity;
 
 
-def check_order(client):
+def check_order():
     while True:
         order_ids = open_orders;
         for order_id in order_ids:
-            # order_id = cur_order['orderId']
-            # status = order['status']
-            order = client.futures_get_order(orderId=order_id, symbol='BTCUSDT')
-            status = order.get('status')
-            print(order_id,status)
-            if status == 'FILLED':
-                print(f"Order {order_id} has been filled.")
-                process_order(client,order)
-                open_orders.remove(order_id)
-            if status == 'EXPIRED':
-                print(f"Order {order_id} is expired.")
-                open_orders.remove(order_id)
+            try:
+                order = client.futures_get_order(orderId=order_id, symbol='BTCUSDT')
+                status = order.get('status')
+                print(order_id,status)
+                if status == 'FILLED':
+                    print(f"Order {order_id} has been filled.")
+                    process_order(order)
+                    open_orders.remove(order_id)
+                if status == 'EXPIRED':
+                    print(f"Order {order_id} is expired.")
+                    open_orders.remove(order_id)
+            except Exception as e:
+                print('check order error',e)
+                init_clinet()
+                print('init client')
+
             time.sleep(8)
         time.sleep(8)
 
 
-def process_order(client,order):
+def process_order(order):
     side = order['side']
     price = float(order['avgPrice'])
     quantity = float(order['executedQty'])
     if(side == 'BUY'):
         sell_price = price * (1 + per_step)
-        do_sell(client,quantity,sell_price)
+        do_sell(quantity,sell_price)
     else:
         buy_price = price * (1 - per_step)
-        do_buy(client,quantity,buy_price)
+        do_buy(quantity,buy_price)
 
 
-def do_sell(client,quantity,price):
+def do_sell(quantity,price):
     # quantity = max(0.002,quantity)
     price = round(price,1)
-    quantity = safe_sell_quantity(client,quantity)
+    quantity = safe_sell_quantity(quantity)
     
     if(quantity <= 0):
         print('当前持仓已经全部挂单卖出')
@@ -212,11 +228,11 @@ def do_sell(client,quantity,price):
         print('卖出报错',e)
     return quantity
 
-def do_buy(client,quantity,price):
+def do_buy(quantity,price):
     quantity = max(0.002,quantity)
 
     # if TICK_SIZE is None:
-    #     fetch_tick_size(client)
+    #     fetch_tick_size()
     # 调整卖出价格，确保是tick size的整数倍
     # adjusted_sell_price = round(price / TICK_SIZE) * TICK_SIZE
     price = round(price,1)
@@ -238,9 +254,27 @@ def do_buy(client,quantity,price):
 
 
 # 获取所有未成交订单
-def get_open_orders(client):
+def get_open_orders():
     return client.futures_get_open_orders(symbol='BTCUSDT')
 
+
+def check_position(symbol):
+    # 获取所有合约交易对的仓位信息
+    positions = client.futures_position_information()
+    
+    # 遍历所有仓位，找到对应的symbol
+    for position in positions:
+        if position['symbol'] == symbol:
+            position_amt = float(position['positionAmt'])
+            if position_amt != 0:
+                print(f"Currently holding {position_amt} units of {symbol}.")
+                return True
+            else:
+                print(f"No open positions for {symbol}.")
+                return False
+
+    print(f"No data found for {symbol}.")
+    return False
 
 if __name__ == "__main__":
     asyncio.run(main())
